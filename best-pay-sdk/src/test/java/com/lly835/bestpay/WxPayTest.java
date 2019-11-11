@@ -1,6 +1,7 @@
 package com.lly835.bestpay;
 
 import com.lly835.bestpay.config.WxPayConfig;
+import com.lly835.bestpay.enums.BestPayPlatformEnum;
 import com.lly835.bestpay.enums.BestPayTypeEnum;
 import com.lly835.bestpay.model.*;
 import com.lly835.bestpay.model.wxpay.response.WxPayAsyncResponse;
@@ -59,7 +60,7 @@ public class WxPayTest {
     @Test
     public void pay() {
         PayRequest request = new PayRequest();
-        request.setPayTypeEnum(BestPayTypeEnum.WXPAY_H5);
+        request.setPayTypeEnum(BestPayTypeEnum.WXPAY_MP);
         request.setOrderId("111111111222" + new Random().nextInt(1000));
         request.setOrderAmount(0.01);
         request.setOrderName("微信h5订单");
@@ -81,7 +82,7 @@ public class WxPayTest {
     @Test
     public void query() {
         OrderQueryRequest request = new OrderQueryRequest();
-        request.setPayTypeEnum(BestPayTypeEnum.WXPAY_H5);
+        request.setPlatformEnum(BestPayPlatformEnum.WX);
         request.setOrderId("1528103259255858491");
         OrderQueryResponse response = bestPayService.query(request);
         log.info(JsonUtil.toJson(response));

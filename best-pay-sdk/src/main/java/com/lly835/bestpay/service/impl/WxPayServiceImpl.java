@@ -3,6 +3,7 @@ package com.lly835.bestpay.service.impl;
 import com.lly835.bestpay.config.SignType;
 import com.lly835.bestpay.config.WxPayConfig;
 import com.lly835.bestpay.constants.WxPayConstants;
+import com.lly835.bestpay.enums.BestPayPlatformEnum;
 import com.lly835.bestpay.enums.BestPayTypeEnum;
 import com.lly835.bestpay.enums.OrderStatusEnum;
 import com.lly835.bestpay.model.*;
@@ -22,6 +23,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.RequestBody;
 import okhttp3.ResponseBody;
 import okhttp3.logging.HttpLoggingInterceptor;
+import org.apache.commons.lang3.StringUtils;
 import retrofit2.Call;
 import retrofit2.Response;
 import retrofit2.Retrofit;
@@ -41,7 +43,7 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
 
     private WxPayConfig wxPayConfig;
 
-    Retrofit retrofit = new Retrofit.Builder()
+    private Retrofit retrofit = new Retrofit.Builder()
             .baseUrl(WxPayConstants.WXPAY_GATEWAY)
             .addConverterFactory(SimpleXmlConverterFactory.create())
             .client(new OkHttpClient.Builder()
@@ -65,16 +67,18 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
         wxRequest.setTradeType(request.getPayTypeEnum().getCode());
 
         //小程序和app支付有独立的appid，公众号、h5、native都是公众号的appid
-        //TODO 加上app的appid
         if (request.getPayTypeEnum() == BestPayTypeEnum.WXPAY_MINI){
             wxRequest.setAppid(wxPayConfig.getMiniAppId());
+        }else if (request.getPayTypeEnum() == BestPayTypeEnum.WXPAY_APP){
+            wxRequest.setAppid(wxPayConfig.getAppAppId());
         }else {
             wxRequest.setAppid(wxPayConfig.getAppId());
         }
         wxRequest.setMchId(wxPayConfig.getMchId());
         wxRequest.setNotifyUrl(wxPayConfig.getNotifyUrl());
         wxRequest.setNonceStr(RandomUtil.getRandomStr());
-        wxRequest.setSpbillCreateIp(request.getSpbillCreateIp() == null || request.getSpbillCreateIp().isEmpty() ? "8.8.8.8" : request.getSpbillCreateIp());
+        wxRequest.setSpbillCreateIp(StringUtils.isEmpty(request.getSpbillCreateIp()) ? "8.8.8.8" : request.getSpbillCreateIp());
+        wxRequest.setAttach(request.getAttach());
         wxRequest.setSign(WxPaySignature.sign(MapUtil.buildMap(wxRequest), wxPayConfig.getMchKey()));
 
         RequestBody body = RequestBody.create(MediaType.parse("application/xml; charset=utf-8"), XmlUtil.toString(wxRequest));
@@ -85,12 +89,14 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
         }catch (IOException e) {
             e.printStackTrace();
         }
-        if (!retrofitResponse.isSuccessful()) {
+		assert retrofitResponse != null;
+		if (!retrofitResponse.isSuccessful()) {
             throw new RuntimeException("【微信统一支付】发起支付, 网络异常");
         }
         WxPaySyncResponse response = retrofitResponse.body();
 
-        if(!response.getReturnCode().equals(WxPayConstants.SUCCESS)) {
+		assert response != null;
+		if(!response.getReturnCode().equals(WxPayConstants.SUCCESS)) {
             throw new RuntimeException("【微信统一支付】发起支付, returnCode != SUCCESS, returnMsg = " + response.getReturnMsg());
         }
         if (!response.getResultCode().equals(WxPayConstants.SUCCESS)) {
@@ -224,10 +230,13 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
         }catch (IOException e) {
             e.printStackTrace();
         }
+        assert retrofitResponse != null;
         if (!retrofitResponse.isSuccessful()) {
             throw new RuntimeException("【微信订单查询】网络异常");
         }
         WxOrderQueryResponse response = retrofitResponse.body();
+
+        assert response != null;
         if(!response.getReturnCode().equals(WxPayConstants.SUCCESS)) {
             throw new RuntimeException("【微信订单查询】returnCode != SUCCESS, returnMsg = " + response.getReturnMsg());
         }
@@ -237,7 +246,12 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
 
         return OrderQueryResponse.builder()
                 .orderStatusEnum(OrderStatusEnum.findByName(response.getTradeState()))
-                .resultMsg(response.getTradeStateDesc() == null ? "" : response.getTradeStateDesc())
+                .resultMsg(response.getTradeStateDesc())
+				.outTradeNo(response.getTransactionId())
+                .orderId(response.getOutTradeNo())
+				.attach(response.getAttach())
+                //yyyyMMddHHmmss -> yyyy-MM-dd HH:mm:ss
+                .finishTime(response.getTimeEnd().replaceAll("(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})", "$1-$2-$3 $4:$5:$6"))
                 .build();
     }
 
@@ -253,9 +267,11 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
 
     private PayResponse buildPayResponse(WxPayAsyncResponse response) {
         PayResponse payResponse = new PayResponse();
+        payResponse.setPayPlatformEnum(BestPayPlatformEnum.WX);
         payResponse.setOrderAmount(MoneyUtil.Fen2Yuan(response.getTotalFee()));
         payResponse.setOrderId(response.getOutTradeNo());
         payResponse.setOutTradeNo(response.getTransactionId());
+        payResponse.setAttach(response.getAttach());
         payResponse.setMwebUrl(response.getMwebUrl());
         return payResponse;
     }
@@ -348,12 +364,10 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
      */
     @Override
     public String getQrCodeUrl(String productId) {
-
         String appid = wxPayConfig.getAppId();
         String mch_id = wxPayConfig.getMchId();
         String timeStamp = String.valueOf(System.currentTimeMillis() / 1000);
         String nonceStr = RandomUtil.getRandomStr();
-
 
         //先构造要签名的map
         Map<String, String> map = new HashMap<>();
@@ -363,63 +377,12 @@ public class WxPayServiceImpl extends BestPayServiceImpl {
         map.put("time_stamp", timeStamp);
         map.put("nonce_str", nonceStr);
 
-
-        String url = "weixin://wxpay/bizpayurl?"
+        return "weixin://wxpay/bizpayurl?"
                 + "appid=" + appid
                 + "&mch_id=" + mch_id
                 + "&product_id=" + productId
                 + "&time_stamp=" + timeStamp
                 + "&nonce_str=" + nonceStr
                 + "&sign=" + WxPaySignature.sign(map, wxPayConfig.getMchKey());
-
-
-
-
-        return url;
     }
-
-    @Override
-    public WxQrCodeAsyncResponse asyncQrCodeNotify(String notifyData) {
-
-        //签名校验
-        if (!WxPaySignature.verify(XmlUtil.toMap(notifyData), wxPayConfig.getMchKey())) {
-            log.error("【微信支付异步通知】签名验证失败, response={}", notifyData);
-            throw new RuntimeException("【微信支付异步通知】签名验证失败");
-        }
-
-        //xml解析为对象
-        WxQrCodeAsyncResponse asyncQrCodeResponse = (WxQrCodeAsyncResponse) XmlUtil.toObject(notifyData, WxQrCodeAsyncResponse.class);
-
-
-        return asyncQrCodeResponse;
-    }
-
-    public WxQrCode2WxResponse buildQrCodeResponse(PayResponse payResponse) {
-        WxQrCode2WxResponse response = new WxQrCode2WxResponse();
-        response.setReturnCode("SUCCESS");
-//        response.setReturnMsg("");
-        response.setAppid(wxPayConfig.getAppId());
-        response.setMchId(wxPayConfig.getMchId());
-        response.setNonceStr(payResponse.getNonceStr());
-        response.setPrepayId(payResponse.getPackAge());
-        response.setResultCode("SUCCESS");
-//        response.setErrCodeDes("");
-
-
-        //先构造要签名的map
-        Map<String, String> map = new HashMap<>();
-        map.put("return_code", response.getReturnCode());
-//        map.put("return_msg", response.getReturnMsg());
-        map.put("appid", response.getAppid());
-        map.put("mch_id", response.getMchId());
-        map.put("nonce_str", response.getNonceStr());
-        map.put("prepay_id", response.getPrepayId());
-        map.put("result_code", response.getResultCode());
-//        map.put("err_code_des", response.getErrCodeDes());
-
-        response.setSign(WxPaySignature.sign(map, wxPayConfig.getMchKey()));
-
-        return response;
-    }
-
 }
